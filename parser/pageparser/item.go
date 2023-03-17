@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/yuin/goldmark/util"
 )
@@ -101,6 +102,36 @@ func (i Item) ValTyped(source []byte) any {
 	}
 
 	return str
+}
+
+// Convert string input to bool, int, float or string value depending on the input format.
+//
+// Single quoted input acts as overwrite to return a string when otherwise another value would be returned.
+// For example `StandaloneValTyped("42")` returns the integer 42 whereas `StandaloneValTyped("'42'")` returns the string "42"
+// If you want to return a single quoted string use two nested single quotes like `StandaloneValTyped("”42”")` which returns the string "'42'"
+func StandaloneValTyped(source string) any {
+	if strings.HasPrefix(source, "'") && strings.HasSuffix(source, "'") {
+		// allow escaping with single quotes
+		return source[1 : len(source)-1]
+	}
+	if boolRe.MatchString(source) {
+		return source == "true"
+	}
+	if intRe.MatchString(source) {
+		num, err := strconv.Atoi(source)
+		if err != nil {
+			return source
+		}
+		return num
+	}
+	if floatRe.MatchString(source) {
+		num, err := strconv.ParseFloat(source, 64)
+		if err != nil {
+			return source
+		}
+		return num
+	}
+	return source
 }
 
 func (i Item) IsText() bool {

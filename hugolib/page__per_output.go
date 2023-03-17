@@ -207,8 +207,32 @@ func newPageContentOutput(p *pageState, po *pageOutput) (*pageContentOutput, err
 				// This should never happen.
 				return nil, fmt.Errorf("unknown shortcode token %q", token)
 			}
+			customTokenHandler := func(ctx context.Context, attributes map[string]string, content string, pos int, length int) ([]byte, error) {
 
-			cp.workContent, err = expandShortcodeTokens(ctx, cp.workContent, tokenHandler)
+				sc, err := createCustomShortcode(attributes, content, pos, length)
+				if err != nil {
+					return nil, err
+				}
+
+				tplVariants := tpl.TemplateVariants{
+					Language:     p.Language().Lang,
+					OutputFormat: p.f,
+				}
+
+				renderer, err := prepareShortcode(ctx, 0, p.s, tplVariants, sc, nil, p)
+				if err != nil {
+					return nil, err
+				}
+
+				repl, _, err := renderer.renderShortcode(ctx)
+				if err != nil {
+					return nil, err
+				}
+
+				return repl, nil
+			}
+
+			cp.workContent, err = expandShortcodeTokens(ctx, cp.workContent, tokenHandler, customTokenHandler)
 			if err != nil {
 				return err
 			}
@@ -520,8 +544,32 @@ func (p *pageContentOutput) RenderString(ctx context.Context, args ...any) (temp
 				// This should not happen.
 				return nil, fmt.Errorf("unknown shortcode token %q", token)
 			}
+			customTokenHandler := func(ctx context.Context, attributes map[string]string, content string, pos int, length int) ([]byte, error) {
 
-			rendered, err = expandShortcodeTokens(ctx, rendered, tokenHandler)
+				sc, err := createCustomShortcode(attributes, content, pos, length)
+				if err != nil {
+					return nil, err
+				}
+
+				tplVariants := tpl.TemplateVariants{
+					Language:     p.p.Language().Lang,
+					OutputFormat: p.f,
+				}
+
+				renderer, err := prepareShortcode(ctx, 0, p.p.s, tplVariants, sc, nil, p.p)
+				if err != nil {
+					return nil, err
+				}
+
+				repl, _, err := renderer.renderShortcode(ctx)
+				if err != nil {
+					return nil, err
+				}
+
+				return repl, nil
+			}
+
+			rendered, err = expandShortcodeTokens(ctx, rendered, tokenHandler, customTokenHandler)
 			if err != nil {
 				return "", err
 			}

@@ -182,11 +182,11 @@ func (scp *ShortcodeWithPage) page() page.Page {
 	return scp.Page
 }
 
-// Note - this value must not contain any markup syntax
-const shortcodePlaceholderPrefix = "HAHAHUGOSHORTCODE"
+const shortcodeClass = "hugo-shortcode"
+const customShortcodeClass = "hugo-shortcode-custom"
 
 func createShortcodePlaceholder(id string, ordinal int) string {
-	return shortcodePlaceholderPrefix + id + strconv.Itoa(ordinal) + "HBHB"
+	return `<span class="` + shortcodeClass + `" data-id="` + id + `" data-ordinal="` + strconv.Itoa(ordinal) + `"></span>`
 }
 
 type shortcode struct {
@@ -540,6 +540,75 @@ func (s *shortcodeHandler) parseError(err error, input []byte, pos int) error {
 	return err
 }
 
+var shortcodeAttributeRegex = regexp.MustCompile(`^data-(id|p-(\d{1,6})|n-(\S+))$`)
+
+func createCustomShortcode(attributes map[string]string, content string, pos int, length int) (*shortcode, error) {
+	posParams := map[int]string{}
+	nmdParams := map[string]string{}
+	idFound := false
+	id := ""
+	for key, val := range attributes {
+		match := shortcodeAttributeRegex.FindStringSubmatch(key)
+		if match == nil {
+			return nil, fmt.Errorf("custom shortcode has unexpected attribute format")
+		}
+		switch match[1][0] {
+		case 'i':
+			// shortcode id
+			idFound = true
+			id = val
+
+		case 'p':
+			// positional parameter
+			p, _ := strconv.Atoi(match[2]) // is always convertible due to regexp check
+			_, found := posParams[p]
+			if found {
+				return nil, fmt.Errorf("ambiguous positional parameter")
+			}
+			posParams[p] = val
+
+		case 'n':
+			// named parameter
+			_, found := nmdParams[match[3]]
+			if found {
+				return nil, fmt.Errorf("ambiguous named parameter")
+			}
+			nmdParams[match[2]] = val
+		}
+	}
+	if !idFound {
+		return nil, fmt.Errorf("attribute data-id missing in custom shortcode")
+	}
+	params := any(nil)
+	if len(posParams) == 0 {
+		if len(nmdParams) != 0 {
+			m := map[string]any{}
+			for key, val := range nmdParams {
+				m[key] = pageparser.StandaloneValTyped(val)
+			}
+			params = m
+		}
+	} else {
+		if len(nmdParams) != 0 {
+			return nil, fmt.Errorf("mixed positional and named parameters")
+		} else {
+			a := []any{}
+			for i := 0; i < len(posParams); i++ {
+				val, found := posParams[i]
+				if !found {
+					return nil, fmt.Errorf("positional parameters not in order (starting from zero)")
+				}
+				a = append(a, pageparser.StandaloneValTyped(val))
+			}
+			params = a
+		}
+	}
+
+	sc := &shortcode{name: id, params: params, inner: []any{content}, pos: pos, length: length, isInline: false, doMarkup: false, indentation: "", ordinal: -1}
+
+	return sc, nil
+}
+
 // pageTokens state:
 // - before: positioned just before the shortcode start
 // - after: shortcode(s) consumed (plural when they are nested)
@@ -701,53 +770,257 @@ Loop:
 	return sc, nil
 }
 
+type shortcodeSpan struct {
+	isCustom   bool
+	attributes map[string]string
+	content    []any
+	start      int
+	end        int
+}
+
+func (s *shortcodeSpan) getPlaceholder() string {
+	if s.isCustom {
+		return ""
+	}
+	id, found1 := s.attributes["data-id"]
+	ordStr, found2 := s.attributes["data-ordinal"]
+	if !found1 || !found2 {
+		return ""
+	}
+	ord, err := strconv.Atoi(ordStr)
+	if err != nil {
+		return ""
+	}
+	return createShortcodePlaceholder(id, ord)
+}
+
+type shortcodeSpanParseState int
+
+const (
+	stateNone shortcodeSpanParseState = iota
+	stateInner
+)
+
+var spanOrCommentRegex = regexp.MustCompile(`<(span|p>\s*(<span)|!--)`)
+var spanStartRegex = regexp.MustCompile(`^<span([^>]*)>`)
+
+var parEndRegex = regexp.MustCompile(`^\s*</p>`)
+var htmlTagRegex = regexp.MustCompile(`<(/?)[^>/]+(/?)>`)
+var htmlAttrRegex = regexp.MustCompile(`([^\s=]+)="([^"]*)"`)
+
+func parseShortcodeSpans(
+	source []byte,
+	offset int,
+) ([]any, error) {
+	content := []any{}
+	tmp := shortcodeSpan{attributes: map[string]string{}}
+	unsavedStart := 0
+	spanStart := 0
+	contentStart := 0
+
+	start := offset
+	state := stateNone
+	depth := 0
+
+Outer:
+	for {
+		switch state {
+		case stateNone:
+			match := spanOrCommentRegex.FindSubmatchIndex(source[start:])
+			if match == nil {
+				content = append(content, string(source[start:]))
+				break Outer
+			}
+
+			if source[start+match[2]] == '!' {
+				// is comment
+				idx := bytes.Index(source[start+match[3]:], []byte("-->"))
+				if idx == -1 {
+					// this should never happen
+					return nil, fmt.Errorf("unclosed HTML comment")
+				}
+				newStart := start + idx + match[3] + 3
+				content = append(content, string(source[start:newStart]))
+				start = newStart
+
+			} else {
+				// is span
+				spanStart = start + match[0]
+				if source[start+match[2]] == 'p' {
+					// paragraph before span
+					spanStart = start + match[4]
+				}
+				spanMatch := spanStartRegex.FindSubmatch(source[spanStart:])
+				if spanMatch == nil {
+					// this should never happen
+					return nil, fmt.Errorf("unclosed HTML span tag")
+				}
+
+				attrsMatch := htmlAttrRegex.FindAllSubmatch(spanMatch[1], -1)
+				if attrsMatch == nil {
+					// no attributes in span
+					attrsMatch = [][][]byte{}
+				}
+
+				foundShortcode := false
+				for _, attr := range attrsMatch {
+					name, val := attr[1], attr[2]
+					if bytes.Equal(name, []byte("class")) {
+						switch string(val) {
+						case shortcodeClass:
+							foundShortcode = true
+							tmp.isCustom = false
+						case customShortcodeClass:
+							foundShortcode = true
+							tmp.isCustom = true
+						}
+					} else {
+						tmp.attributes[string(name)] = string(val)
+					}
+				}
+
+				newStart := spanStart + len(spanMatch[0])
+				if !foundShortcode {
+					// not shortcode => skip
+					content = append(content, string(source[start:newStart]))
+					start = newStart
+					// reset attributes
+					tmp.attributes = map[string]string{}
+				} else {
+					unsavedStart = start
+					contentStart = newStart
+
+					tmp.start = start + match[0]
+					start = newStart
+					state = stateInner
+				}
+			}
+
+		case stateInner:
+			match := htmlTagRegex.FindSubmatchIndex(source[start:])
+			if match == nil {
+				// this should never happen
+				return nil, fmt.Errorf("unclosed HTML span element")
+			}
+
+			if match[3]-match[2] <= 0 {
+				if match[5]-match[4] <= 0 {
+					// opening
+					depth++
+				}
+				// empty (self-closing) element
+			} else {
+				// closing
+				depth--
+			}
+			if depth < 0 {
+				if !bytes.Equal(source[start+match[0]:start+match[1]], []byte("</span>")) {
+					return nil, fmt.Errorf("non-matching closing tag for span")
+				}
+				end := start + match[1]
+				if tmp.start != spanStart {
+					// paragraph before span
+					parMatch := parEndRegex.FindIndex(source[end:])
+					if parMatch != nil {
+						end += parMatch[1]
+					} else {
+						// do not substitute paragraph because shortcode is not alone
+						tmp.start = spanStart
+					}
+				}
+
+				// recursively parse content
+				childContent, err := parseShortcodeSpans(source[:start+match[0]], contentStart)
+				if err != nil {
+					return nil, err
+				}
+
+				tmp.content = childContent
+				tmp.end = end
+
+				content = append(content, string(source[unsavedStart:tmp.start]), tmp)
+
+				tmp = shortcodeSpan{attributes: map[string]string{}}
+				state = stateNone
+				depth = 0
+			}
+			start += match[1]
+		}
+	}
+	return content, nil
+}
+
 // Replace prefixed shortcode tokens with the real content.
 // Note: This function will rewrite the input slice.
 func expandShortcodeTokens(
 	ctx context.Context,
 	source []byte,
 	tokenHandler func(ctx context.Context, token string) ([]byte, error),
+	customTokenHandler func(ctx context.Context, attributes map[string]string, content string, pos int, length int) ([]byte, error),
 ) ([]byte, error) {
-	start := 0
-
-	pre := []byte(shortcodePlaceholderPrefix)
-	post := []byte("HBHB")
-	pStart := []byte("<p>")
-	pEnd := []byte("</p>")
-
-	k := bytes.Index(source[start:], pre)
-
-	for k != -1 {
-		j := start + k
-		postIdx := bytes.Index(source[j:], post)
-		if postIdx < 0 {
-			// this should never happen, but let the caller decide to panic or not
-			return nil, errors.New("illegal state in content; shortcode token missing end delim")
-		}
-
-		end := j + postIdx + 4
-		key := string(source[j:end])
-		newVal, err := tokenHandler(ctx, key)
-		if err != nil {
-			return nil, err
-		}
-
-		// Issue #1148: Check for wrapping p-tags <p>
-		if j >= 3 && bytes.Equal(source[j-3:j], pStart) {
-			if (k+4) < len(source) && bytes.Equal(source[end:end+4], pEnd) {
-				j -= 3
-				end += 4
-			}
-		}
-
-		// This and other cool slice tricks: https://github.com/golang/go/wiki/SliceTricks
-		source = append(source[:j], append(newVal, source[end:]...)...)
-		start = j
-		k = bytes.Index(source[start:], pre)
-
+	content, err := parseShortcodeSpans(source, 0)
+	if err != nil {
+		return nil, err
 	}
 
+	offset := 0
+	for _, span := range content {
+		span, isSpan := span.(shortcodeSpan)
+		if isSpan {
+			offset, source, _, err = expandShortcode(span, offset, ctx, source, tokenHandler, customTokenHandler)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	return source, nil
+}
+
+func expandShortcode(
+	span shortcodeSpan,
+	offset int,
+	ctx context.Context,
+	source []byte,
+	tokenHandler func(ctx context.Context, token string) ([]byte, error),
+	customTokenHandler func(ctx context.Context, attributes map[string]string, content string, pos int, length int) ([]byte, error),
+) (int, []byte, []byte, error) {
+	l := len(source)
+	newOffset := offset
+
+	newVal, err := []byte(nil), error(nil)
+	if span.isCustom {
+		childContent := []byte{}
+		for _, t := range span.content {
+			switch t := t.(type) {
+			case string:
+				childContent = append(childContent, t...)
+
+			case shortcodeSpan:
+				// recursively expand child
+				var expanded []byte
+				newOffset, source, expanded, err = expandShortcode(t, newOffset, ctx, source, tokenHandler, customTokenHandler)
+				if err != nil {
+					return -1, nil, nil, err
+				}
+				childContent = append(childContent, expanded...)
+
+			default:
+				// this should never happen
+				return -1, nil, nil, fmt.Errorf("unknown child type in content of custom shortcode")
+			}
+		}
+		newVal, err = customTokenHandler(ctx, span.attributes, string(childContent), span.start+offset, span.end+newOffset)
+	} else {
+		newVal, err = tokenHandler(ctx, span.getPlaceholder())
+	}
+	if err != nil {
+		return -1, nil, nil, err
+	}
+	pre := source[:span.start+offset]
+	post := source[span.end+newOffset:]
+	source = append(pre, append(newVal, post...)...)
+
+	return offset + len(source) - l, source, newVal, nil
 }
 
 func renderShortcodeWithPage(ctx context.Context, h tpl.TemplateHandler, tmpl tpl.Template, data *ShortcodeWithPage) (string, error) {
