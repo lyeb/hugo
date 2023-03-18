@@ -184,61 +184,9 @@ func newPageContentOutput(p *pageState, po *pageOutput) (*pageContentOutput, err
 			cp.workContent = r.Bytes()
 		}
 
-		if p.cmap.hasNonMarkdownShortcode || cp.placeholdersEnabled {
-			// There are one or more replacement tokens to be replaced.
-			var hasShortcodeVariants bool
-			tokenHandler := func(ctx context.Context, token string) ([]byte, error) {
-				if token == tocShortcodePlaceholder {
-					// The Page's TableOfContents was accessed in a shortcode.
-					if cp.tableOfContentsHTML == "" {
-						cp.p.s.initInit(ctx, cp.initToC, cp.p)
-					}
-					return []byte(cp.tableOfContentsHTML), nil
-				}
-				renderer, found := cp.contentPlaceholders[token]
-				if found {
-					repl, more, err := renderer.renderShortcode(ctx)
-					if err != nil {
-						return nil, err
-					}
-					hasShortcodeVariants = hasShortcodeVariants || more
-					return repl, nil
-				}
-				// This should never happen.
-				return nil, fmt.Errorf("unknown shortcode token %q", token)
-			}
-			customTokenHandler := func(ctx context.Context, attributes map[string]string, content string, pos int, length int) ([]byte, error) {
-
-				sc, err := createCustomShortcode(attributes, content, pos, length)
-				if err != nil {
-					return nil, err
-				}
-
-				tplVariants := tpl.TemplateVariants{
-					Language:     p.Language().Lang,
-					OutputFormat: p.f,
-				}
-
-				renderer, err := prepareShortcode(ctx, 0, p.s, tplVariants, sc, nil, p)
-				if err != nil {
-					return nil, err
-				}
-
-				repl, _, err := renderer.renderShortcode(ctx)
-				if err != nil {
-					return nil, err
-				}
-
-				return repl, nil
-			}
-
-			cp.workContent, err = expandShortcodeTokens(ctx, cp.workContent, tokenHandler, customTokenHandler)
-			if err != nil {
-				return err
-			}
-			if hasShortcodeVariants {
-				p.pageOutputTemplateVariationsState.Store(2)
-			}
+		cp.workContent, err = cp.replaceShortcodes(ctx, cp.contentPlaceholders, p.cp.workContent)
+		if err != nil {
+			return err
 		}
 
 		if cp.p.source.hasSummaryDivider {
@@ -521,61 +469,9 @@ func (p *pageContentOutput) RenderString(ctx context.Context, args ...any) (temp
 		}
 		rendered = b.Bytes()
 
-		if pm.hasNonMarkdownShortcode || p.placeholdersEnabled {
-			var hasShortcodeVariants bool
-
-			tokenHandler := func(ctx context.Context, token string) ([]byte, error) {
-				if token == tocShortcodePlaceholder {
-					// The Page's TableOfContents was accessed in a shortcode.
-					if p.tableOfContentsHTML == "" {
-						p.p.s.initInit(ctx, p.initToC, p.p)
-					}
-					return []byte(p.tableOfContentsHTML), nil
-				}
-				renderer, found := placeholders[token]
-				if found {
-					repl, more, err := renderer.renderShortcode(ctx)
-					if err != nil {
-						return nil, err
-					}
-					hasShortcodeVariants = hasShortcodeVariants || more
-					return repl, nil
-				}
-				// This should not happen.
-				return nil, fmt.Errorf("unknown shortcode token %q", token)
-			}
-			customTokenHandler := func(ctx context.Context, attributes map[string]string, content string, pos int, length int) ([]byte, error) {
-
-				sc, err := createCustomShortcode(attributes, content, pos, length)
-				if err != nil {
-					return nil, err
-				}
-
-				tplVariants := tpl.TemplateVariants{
-					Language:     p.p.Language().Lang,
-					OutputFormat: p.f,
-				}
-
-				renderer, err := prepareShortcode(ctx, 0, p.p.s, tplVariants, sc, nil, p.p)
-				if err != nil {
-					return nil, err
-				}
-
-				repl, _, err := renderer.renderShortcode(ctx)
-				if err != nil {
-					return nil, err
-				}
-
-				return repl, nil
-			}
-
-			rendered, err = expandShortcodeTokens(ctx, rendered, tokenHandler, customTokenHandler)
-			if err != nil {
-				return "", err
-			}
-			if hasShortcodeVariants {
-				p.p.pageOutputTemplateVariationsState.Store(2)
-			}
+		rendered, err = p.replaceShortcodes(ctx, placeholders, rendered)
+		if err != nil {
+			return "", err
 		}
 
 		// We need a consolidated view in $page.HasShortcode
@@ -587,7 +483,11 @@ func (p *pageContentOutput) RenderString(ctx context.Context, args ...any) (temp
 			return "", p.p.wrapError(err)
 		}
 
-		rendered = c.Bytes()
+		// replace custom shortcodes injected by converter
+		rendered, err = p.replaceShortcodes(ctx, map[string]shortcodeRenderer{}, c.Bytes())
+		if err != nil {
+			return "", err
+		}
 	}
 
 	if opts.Display == "inline" {
@@ -597,6 +497,64 @@ func (p *pageContentOutput) RenderString(ctx context.Context, args ...any) (temp
 	}
 
 	return template.HTML(string(rendered)), nil
+}
+
+func (p *pageContentOutput) replaceShortcodes(ctx context.Context, placeholders map[string]shortcodeRenderer, content []byte) ([]byte, error) {
+	var hasShortcodeVariants bool
+
+	tokenHandler := func(ctx context.Context, token string) ([]byte, error) {
+		if token == tocShortcodePlaceholder {
+			// The Page's TableOfContents was accessed in a shortcode.
+			if p.tableOfContentsHTML == "" {
+				p.p.s.initInit(ctx, p.initToC, p.p)
+			}
+			return []byte(p.tableOfContentsHTML), nil
+		}
+		renderer, found := placeholders[token]
+		if found {
+			repl, more, err := renderer.renderShortcode(ctx)
+			if err != nil {
+				return nil, err
+			}
+			hasShortcodeVariants = hasShortcodeVariants || more
+			return repl, nil
+		}
+		// This should never happen.
+		return nil, fmt.Errorf("unknown shortcode token %q", token)
+	}
+	customTokenHandler := func(ctx context.Context, attributes map[string]string, content string, pos int, length int) ([]byte, error) {
+
+		sc, err := createCustomShortcode(attributes, content, pos, length)
+		if err != nil {
+			return nil, err
+		}
+
+		tplVariants := tpl.TemplateVariants{
+			Language:     p.p.Language().Lang,
+			OutputFormat: p.f,
+		}
+
+		renderer, err := prepareShortcode(ctx, 0, p.p.s, tplVariants, sc, nil, p.p)
+		if err != nil {
+			return nil, err
+		}
+
+		repl, _, err := renderer.renderShortcode(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		return repl, nil
+	}
+
+	res, err := expandShortcodeTokens(ctx, content, tokenHandler, customTokenHandler)
+	if err != nil {
+		return nil, err
+	}
+	if hasShortcodeVariants {
+		p.p.pageOutputTemplateVariationsState.Store(2)
+	}
+	return res, nil
 }
 
 func (p *pageContentOutput) RenderWithTemplateInfo(ctx context.Context, info tpl.Info, layout ...string) (template.HTML, error) {
