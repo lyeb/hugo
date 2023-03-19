@@ -573,7 +573,7 @@ func createCustomShortcode(attributes map[string]string, content string, pos int
 			if found {
 				return nil, fmt.Errorf("ambiguous named parameter")
 			}
-			nmdParams[match[2]] = val
+			nmdParams[match[3]] = val
 		}
 	}
 	if !idFound {
