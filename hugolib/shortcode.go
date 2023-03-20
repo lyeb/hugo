@@ -871,6 +871,7 @@ func parseShortcodeSpans(
 			tmp.end = end
 		}
 		start = tmp.end
+		content = append(content, tmp)
 	}
 }
 
