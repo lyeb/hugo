@@ -14,7 +14,6 @@
 package hugolib
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"html/template"
@@ -48,6 +47,12 @@ var (
 	_ urls.RefLinker  = (*ShortcodeWithPage)(nil)
 	_ pageWrapper     = (*ShortcodeWithPage)(nil)
 	_ text.Positioner = (*ShortcodeWithPage)(nil)
+)
+
+const (
+	shortcodePlaceholderClass  string = "hugo-shrtcdplhld"
+	shortcodeCustomStartSuffix string = "-custom-start"
+	shortcodeCustomEndSuffix   string = "-custom-end"
 )
 
 // ShortcodeWithPage is the "." context in a shortcode template.
@@ -183,7 +188,7 @@ func (scp *ShortcodeWithPage) page() page.Page {
 }
 
 func createShortcodePlaceholder(id string, ordinal int) string {
-	return `<hugo-shrtcdplchld id="` + id + `" ordinal="` + strconv.Itoa(ordinal) + `"></hugo-shrtcdplchld>`
+	return fmt.Sprintf(`<span class="%s" data-id="%s" data-ordinal="%d"></span>`, shortcodePlaceholderClass, id, ordinal)
 }
 
 type shortcode struct {
@@ -537,7 +542,7 @@ func (s *shortcodeHandler) parseError(err error, input []byte, pos int) error {
 	return err
 }
 
-var shortcodeAttributeRegex = regexp.MustCompile(`^(id|p-(\d{1,6})|n-(\S+))$`)
+var shortcodeAttributeRegex = regexp.MustCompile(`^data-(id|p-(\d{1,6})|n-(\S+))$`)
 
 func createCustomShortcode(attributes map[string]string, content string, pos int, length int) (*shortcode, error) {
 	posParams := map[int]string{}
@@ -574,7 +579,7 @@ func createCustomShortcode(attributes map[string]string, content string, pos int
 		}
 	}
 	if !idFound {
-		return nil, fmt.Errorf("attribute id missing in custom shortcode")
+		return nil, fmt.Errorf("attribute data-id missing in custom shortcode")
 	}
 	params := any(nil)
 	if len(posParams) == 0 {
@@ -779,8 +784,8 @@ func (s *shortcodeSpan) getPlaceholder() string {
 	if s.isCustom {
 		return ""
 	}
-	id, found1 := s.attributes["id"]
-	ordStr, found2 := s.attributes["ordinal"]
+	id, found1 := s.attributes["data-id"]
+	ordStr, found2 := s.attributes["data-ordinal"]
 	if !found1 || !found2 {
 		return ""
 	}
@@ -791,106 +796,82 @@ func (s *shortcodeSpan) getPlaceholder() string {
 	return createShortcodePlaceholder(id, ord)
 }
 
-var interruptRegex = regexp.MustCompile(`<(/?hugo-shrtcdplchld|p>\s*(</?hugo-shrtcdplchld))`)
-var elementStartRegex = regexp.MustCompile(`^<hugo-shrtcdplchld(-custom)?([^>]*)>(\s*</p>)?`)
-var parEndRegex = regexp.MustCompile(`^\s*</p>`)
-var htmlAttrRegex = regexp.MustCompile(`([^\s=]+)="([^"]*)"`)
+// Note: The following is not standard compliant!
+//   - `>` characters are not allowed to appear in attribute values
+//   - Attribute values must be enclosed in double quotes
+//
+// This only affects custom shortcodes. If you use them make sure to obey the rules above.
+var shortcodeRegex = regexp.MustCompile(fmt.Sprintf(`(<p>)?\s*<span\s([^>]*class="%s([^"]*)"[^>]*)>\s*</span>\s*(</p>)?`, shortcodePlaceholderClass))
+var htmlAttributeRegex = regexp.MustCompile(`([^\s=]+)="([^"]*)"`)
 
 func parseShortcodeSpans(
 	source []byte,
 	offset int,
-) (int, []any, bool, error) {
+) (bool, int, []any, error) {
 	content := []any{}
 	start := offset
 	for {
 		tmp := shortcodeSpan{attributes: map[string]string{}}
 
-		match := interruptRegex.FindSubmatchIndex(source[start:])
+		match := shortcodeRegex.FindSubmatchIndex(source[start:])
 		if match == nil {
 			// no more shortcodes in source
 			content = append(content, string(source[start:]))
-			return len(source), content, false, nil
+			return false, len(source), content, nil
+		}
+		parBefore, parAfter := match[3]-match[2], match[9]-match[8]
+		if parBefore > 0 && parAfter > 0 {
+			tmp.start = start + match[0]
+			tmp.end = start + match[1]
+		} else {
+			tmp.start = start + match[0] + parBefore
+			tmp.end = start + match[1] - parAfter
 		}
 
-		inPar := false
-		elementStart := start + match[0]
-		switch source[start+match[2]] {
-		case 'p':
-			// paragraph before shortcode
-			inPar = true
-			elementStart = start + match[4]
-			if source[elementStart+1] == '/' {
-				// closing tag inside paragraph => return early with info
-				content = append(content, string(source[start:start+match[0]]))
-				return elementStart, content, true, nil
-			}
+		switch string(source[start+match[6] : start+match[7]]) {
+		case "":
+			// shortcode placeholder
+			tmp.isCustom = false
 
-		case '/':
-			// closing tag => return early
-			content = append(content, string(source[start:elementStart]))
-			return elementStart, content, false, nil
+		case shortcodeCustomStartSuffix:
+			// custom shortcode start
+			tmp.isCustom = true
+
+		case shortcodeCustomEndSuffix:
+			// custom shortcode end of outer level => return early
+			content = append(content, string(source[start:tmp.start]))
+			return true, tmp.end, content, nil
+
+		default:
+			// either multiple classes given or the class name
+			// does not match but has prefix [shortcodePlaceholderClass]
+			// => ignore this case
+			content = append(content, string(source[start:start+match[1]]))
+			start = start + match[1]
+			continue
 		}
 
-		elementMatch := elementStartRegex.FindSubmatch(source[elementStart:])
-		if elementMatch == nil {
-			return -1, nil, false, fmt.Errorf("missing `>` in start-tag of hugo-shrtcdplchld element")
-		}
-
-		if elementMatch[3] != nil {
-			// paragraph end directly after shortcode start
-			inPar = false
-		}
-
-		attrsMatch := htmlAttrRegex.FindAllSubmatch(elementMatch[2], -1)
-		if attrsMatch == nil {
-			// no attributes in shortcode
-			attrsMatch = [][][]byte{}
-		}
-
+		attrsMatch := htmlAttributeRegex.FindAllSubmatch(source[start+match[4]:start+match[5]], -1)
 		for _, attr := range attrsMatch {
-			tmp.attributes[string(attr[1])] = string(attr[2])
-		}
-
-		tmp.start = start + match[0]
-		tmp.isCustom = (elementMatch[1] != nil)
-
-		// recursively parse content
-		end, innerContent, parStartBefore, err := parseShortcodeSpans(source, elementStart+len(elementMatch[0]))
-		if err != nil {
-			return -1, nil, false, err
-		}
-		if parStartBefore && inPar {
-			return -1, nil, false, fmt.Errorf("found unexpected paragraph start-tag in front of a closing hugo-shrtcdplchld element")
-		}
-
-		endTag := "</hugo-shrtcdplchld>"
-		if tmp.isCustom {
-			endTag = "</hugo-shrtcdplchld-custom>"
-		}
-		if !bytes.HasPrefix(source[end:], []byte(endTag)) {
-			return -1, nil, false, fmt.Errorf("no matching end-tag for hugo-shrtcdplchld element found")
-		}
-		end += len(endTag)
-
-		if inPar || parStartBefore {
-			// maybe read ending paragraph element
-			parMatch := parEndRegex.FindIndex(source[end:])
-			if parMatch != nil {
-				end += parMatch[1]
-			} else if inPar {
-				// do not substitute paragraph because shortcode is not alone
-				tmp.start = elementStart
-			} else {
-				return -1, nil, false, fmt.Errorf("expected paragraph end after closing hugo-shrtcdplchld element")
+			key, val := string(attr[1]), string(attr[2])
+			if key != "class" {
+				tmp.attributes[key] = val
 			}
 		}
 
-		tmp.content = innerContent
-		tmp.end = end
-
-		content = append(content, string(source[start:tmp.start]), tmp)
-
-		start = end
+		if tmp.isCustom {
+			foundEndTag, end, innerContent, err := parseShortcodeSpans(source, tmp.end)
+			if err != nil {
+				return false, -1, nil, err
+			}
+			if !foundEndTag {
+				return false, -1, nil, fmt.Errorf("no matching custom shortcode end found")
+			}
+			tmp.content = innerContent
+			tmp.end = end
+		}
+		start = tmp.end
+		content = append(content, tmp)
 	}
 }
 
@@ -902,12 +883,12 @@ func expandShortcodeTokens(
 	tokenHandler func(ctx context.Context, token string) ([]byte, error),
 	customTokenHandler func(ctx context.Context, attributes map[string]string, content string, pos int, length int) ([]byte, error),
 ) ([]byte, error) {
-	end, content, _, err := parseShortcodeSpans(source, 0)
+	foundEndTag, _, content, err := parseShortcodeSpans(source, 0)
 	if err != nil {
 		return nil, err
 	}
-	if end != len(source) {
-		return nil, fmt.Errorf("unexpected hugo-shrtcdplchld end-tag")
+	if foundEndTag {
+		return nil, fmt.Errorf("unexpected custom shortcode end found")
 	}
 
 	offset := 0
