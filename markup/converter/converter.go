@@ -119,6 +119,12 @@ type TableOfContentsProvider interface {
 	TableOfContents() *tableofcontents.Fragments
 }
 
+// CustomOutputConverter enables the converter to provide a distinct output for each defined custom format.
+type CustomOutputConverter interface {
+	SupportsFormat(format string) bool
+	ConvertFormat(ctx RenderContext, format string) (ResultRender, error)
+}
+
 // AnchorNameSanitizer tells how a converter sanitizes anchor names.
 type AnchorNameSanitizer interface {
 	SanitizeAnchorName(s string) string

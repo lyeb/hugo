@@ -17,11 +17,13 @@ package pandoc_config
 var (
 	// Default holds Hugo's default pandoc configuration.
 	Default = Config{
-		GenerateTOC: false,
+		GenerateTOC:            false,
+		UseCustomOutputCommand: false,
 	}
 )
 
 // Configuration of pandoc.
 type Config struct {
-	GenerateTOC bool
+	GenerateTOC            bool
+	UseCustomOutputCommand bool
 }

@@ -128,6 +128,11 @@ type pageState struct {
 }
 
 func (p *pageState) reusePageOutputContent() bool {
+	if customOutput, ok := p.getContentConverter().(converter.CustomOutputConverter); ok {
+		if customOutput.SupportsFormat(p.f.Name) {
+			return false
+		}
+	}
 	return p.pageOutputTemplateVariationsState.Load() == 1
 }
 

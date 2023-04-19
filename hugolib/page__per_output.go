@@ -785,23 +785,33 @@ func (cp *pageContentOutput) RenderContent(ctx context.Context, content []byte, 
 }
 
 func (cp *pageContentOutput) renderContentWithConverter(ctx context.Context, c converter.Converter, content []byte, renderTOC bool) (converter.ResultRender, error) {
-	r, err := c.Convert(
+	var (
+		res converter.ResultRender
+		err error
+	)
+	rctx :=
 		converter.RenderContext{
 			Ctx:         ctx,
 			Src:         content,
 			RenderTOC:   renderTOC,
 			GetRenderer: cp.renderHooks.getRenderer,
-		})
+		}
+	customOutput, ok := c.(converter.CustomOutputConverter)
+	if ok && customOutput.SupportsFormat(cp.f.Name) {
+		res, err = customOutput.ConvertFormat(rctx, cp.f.Name)
+	} else {
+		res, err = c.Convert(rctx)
+	}
 
 	if err == nil {
-		if ids, ok := r.(identity.IdentitiesProvider); ok {
+		if ids, ok := res.(identity.IdentitiesProvider); ok {
 			for _, v := range ids.GetIdentities() {
 				cp.trackDependency(v)
 			}
 		}
 	}
 
-	return r, err
+	return res, err
 }
 
 func (p *pageContentOutput) setWordCounts(isCJKLanguage bool) {
