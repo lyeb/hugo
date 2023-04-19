@@ -2,7 +2,7 @@
 # Twitter:      https://twitter.com/gohugoio
 # Website:      https://gohugo.io/
 
-FROM golang:1.19-alpine AS build
+FROM golang:1.20.3-bullseye AS build
 
 # Optionally set HUGO_BUILD_TAGS to "extended" or "nodeploy" when building like so:
 #   docker build --build-arg HUGO_BUILD_TAGS=extended .
@@ -18,22 +18,18 @@ WORKDIR /go/src/github.com/gohugoio/hugo
 COPY . /go/src/github.com/gohugoio/hugo/
 
 # gcc/g++ are required to build SASS libraries for extended version
-RUN apk update && \
-    apk add --no-cache gcc g++ musl-dev git && \
-    go install github.com/magefile/mage
+RUN apt -y update && apt -y upgrade && apt -y install gcc g++ git
+RUN go install github.com/magefile/mage
 
 RUN mage hugo && mage install
 
 # ---
 
-FROM alpine:3.16
+FROM debian:bullseye-slim
 
 COPY --from=build /go/bin/hugo /usr/bin/hugo
 
-# libc6-compat & libstdc++ are required for extended SASS libraries
-# ca-certificates are required to fetch outside resources (like Twitter oEmbeds)
-RUN apk update && \
-    apk add --no-cache ca-certificates libc6-compat libstdc++ git
+RUN apt -y update && apt -y upgrade && apt -y install ca-certificates git
 
 VOLUME /site
 WORKDIR /site
