@@ -33,13 +33,13 @@ var Provider converter.ProviderProvider = provider{}
 type provider struct {
 }
 
-func (p provider) New(cfg converter.ProviderConfig) (converter.Provider, error) {
-	return converter.NewProvider("rst", func(ctx converter.DocumentContext) (converter.Converter, error) {
+func (p provider) New(cfg converter.ProviderConfig) ([]converter.Provider, error) {
+	return []converter.Provider{converter.NewProvider("rst", []string{}, func(ctx converter.DocumentContext) (converter.Converter, error) {
 		return &rstConverter{
 			ctx: ctx,
 			cfg: cfg,
 		}, nil
-	}), nil
+	})}, nil
 }
 
 type rstConverter struct {

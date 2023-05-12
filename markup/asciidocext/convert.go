@@ -42,13 +42,13 @@ var Provider converter.ProviderProvider = provider{}
 
 type provider struct{}
 
-func (p provider) New(cfg converter.ProviderConfig) (converter.Provider, error) {
-	return converter.NewProvider("asciidocext", func(ctx converter.DocumentContext) (converter.Converter, error) {
+func (p provider) New(cfg converter.ProviderConfig) ([]converter.Provider, error) {
+	return []converter.Provider{converter.NewProvider("asciidocext", []string{"ad", "adoc"}, func(ctx converter.DocumentContext) (converter.Converter, error) {
 		return &asciidocConverter{
 			ctx: ctx,
 			cfg: cfg,
 		}, nil
-	}), nil
+	})}, nil
 }
 
 type asciidocResult struct {

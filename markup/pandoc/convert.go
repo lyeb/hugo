@@ -15,6 +15,9 @@
 package pandoc
 
 import (
+	"os"
+	"strings"
+
 	"github.com/gohugoio/hugo/common/hexec"
 	"github.com/gohugoio/hugo/htesting"
 	"github.com/gohugoio/hugo/identity"
@@ -26,21 +29,51 @@ import (
 // Provider is the package entry point.
 var Provider converter.ProviderProvider = provider{}
 
+// pandoc default binary name
+const pandocBinary = "pandoc"
+
+// pandoc default arguments
+var pandocArgs = []string{"--mathjax"}
+
 type provider struct {
 }
 
-func (p provider) New(cfg converter.ProviderConfig) (converter.Provider, error) {
-	return converter.NewProvider("pandoc", func(ctx converter.DocumentContext) (converter.Converter, error) {
-		return &pandocConverter{
-			ctx: ctx,
-			cfg: cfg,
-		}, nil
-	}), nil
+func (p provider) New(cfg converter.ProviderConfig) ([]converter.Provider, error) {
+	res := make([]converter.Provider, 0, 1+len(cfg.MarkupConfig.Pandoc.CustomMarkupFormats))
+	res = append(res,
+		converter.NewProvider("pandoc", []string{"pdc"}, func(ctx converter.DocumentContext) (converter.Converter, error) {
+			return &pandocConverter{
+				ctx:  ctx,
+				cfg:  cfg,
+				cmd:  pandocBinary,
+				args: pandocArgs,
+			}, nil
+		}))
+	for _, fmt := range cfg.MarkupConfig.Pandoc.CustomMarkupFormats {
+		env := "PANDOC_FMT_" + strings.ToUpper(fmt)
+		cmd := os.Getenv(env)
+		if cmd == "" {
+			cfg.Logger.Printf("environment variable %s not set. Ignoring custom pandoc format %s.\n", env, fmt)
+		} else {
+			res = append(res,
+				converter.NewProvider(fmt, []string{}, func(ctx converter.DocumentContext) (converter.Converter, error) {
+					return &pandocConverter{
+						ctx:  ctx,
+						cfg:  cfg,
+						cmd:  cmd,
+						args: []string{},
+					}, nil
+				}))
+		}
+	}
+	return res, nil
 }
 
 type pandocConverter struct {
-	ctx converter.DocumentContext
-	cfg converter.ProviderConfig
+	ctx  converter.DocumentContext
+	cfg  converter.ProviderConfig
+	cmd  string
+	args []string
 }
 
 func (c *pandocConverter) Convert(ctx converter.RenderContext) (converter.ResultRender, error) {
@@ -58,17 +91,13 @@ func (c *pandocConverter) Supports(feature identity.Identity) bool {
 // getPandocContent calls pandoc as an external helper to convert pandoc markdown to HTML.
 func (c *pandocConverter) getPandocContent(src []byte, ctx converter.DocumentContext) ([]byte, error) {
 	logger := c.cfg.Logger
-	binaryName := getPandocBinaryName()
-	if binaryName == "" {
-		logger.Println("pandoc not found in $PATH: Please install.\n",
-			"                 Leaving pandoc content unrendered.")
+	if !hexec.InPath(c.cmd) {
+		logger.Printf("pandoc binary %s not found in $PATH: Please install the missing files.\n"+
+			"                 Leaving pandoc content unrendered.\n", c.cmd)
 		return src, nil
 	}
-	args := []string{"--mathjax"}
-	return internal.ExternallyRenderContent(c.cfg, ctx, src, binaryName, args)
+	return internal.ExternallyRenderContent(c.cfg, ctx, src, c.cmd, c.args)
 }
-
-const pandocBinary = "pandoc"
 
 func getPandocBinaryName() string {
 	if hexec.InPath(pandocBinary) {

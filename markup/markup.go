@@ -48,35 +48,40 @@ func NewConverterProvider(cfg converter.ProviderConfig) (ConverterProvider, erro
 	defaultHandler := cfg.MarkupConfig.DefaultMarkdownHandler
 	var defaultFound bool
 
-	add := func(p converter.ProviderProvider, aliases ...string) error {
-		c, err := p.New(cfg)
+	add := func(p converter.ProviderProvider) error {
+		convs, err := p.New(cfg)
 		if err != nil {
 			return err
 		}
 
-		name := c.Name()
+		for _, conv := range convs {
 
-		aliases = append(aliases, name)
+			name := conv.Name()
+			aliases := append([]string{name}, conv.Aliases()...)
 
-		if strings.EqualFold(name, defaultHandler) {
-			aliases = append(aliases, "markdown")
-			defaultFound = true
+			if strings.EqualFold(name, defaultHandler) {
+				aliases = append(aliases, "markdown")
+				defaultFound = true
+			}
+
+			err := addConverter(converters, conv, aliases...)
+			if err != nil {
+				return err
+			}
 		}
-
-		addConverter(converters, c, aliases...)
 		return nil
 	}
 
 	if err := add(goldmark.Provider); err != nil {
 		return nil, err
 	}
-	if err := add(asciidocext.Provider, "ad", "adoc"); err != nil {
+	if err := add(asciidocext.Provider); err != nil {
 		return nil, err
 	}
 	if err := add(rst.Provider); err != nil {
 		return nil, err
 	}
-	if err := add(pandoc.Provider, "pdc"); err != nil {
+	if err := add(pandoc.Provider); err != nil {
 		return nil, err
 	}
 	if err := add(org.Provider); err != nil {
@@ -126,8 +131,12 @@ func (r *converterRegistry) GetMarkupConfig() markup_config.Config {
 	return r.config.MarkupConfig
 }
 
-func addConverter(m map[string]converter.Provider, c converter.Provider, aliases ...string) {
+func addConverter(m map[string]converter.Provider, c converter.Provider, aliases ...string) error {
 	for _, alias := range aliases {
+		if _, ok := m[alias]; ok {
+			return fmt.Errorf("converter with name/alias %s is defined multiple times", alias)
+		}
 		m[alias] = c
 	}
+	return nil
 }

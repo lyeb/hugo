@@ -29,13 +29,13 @@ var Provider converter.ProviderProvider = provide{}
 
 type provide struct{}
 
-func (p provide) New(cfg converter.ProviderConfig) (converter.Provider, error) {
-	return converter.NewProvider("org", func(ctx converter.DocumentContext) (converter.Converter, error) {
+func (p provide) New(cfg converter.ProviderConfig) ([]converter.Provider, error) {
+	return []converter.Provider{converter.NewProvider("org", []string{}, func(ctx converter.DocumentContext) (converter.Converter, error) {
 		return &orgConverter{
 			ctx: ctx,
 			cfg: cfg,
 		}, nil
-	}), nil
+	})}, nil
 }
 
 type orgConverter struct {

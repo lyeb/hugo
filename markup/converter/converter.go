@@ -41,26 +41,29 @@ type ProviderConfig struct {
 
 // ProviderProvider creates converter providers.
 type ProviderProvider interface {
-	New(cfg ProviderConfig) (Provider, error)
+	New(cfg ProviderConfig) ([]Provider, error)
 }
 
 // Provider creates converters.
 type Provider interface {
 	New(ctx DocumentContext) (Converter, error)
 	Name() string
+	Aliases() []string
 }
 
 // NewProvider creates a new Provider with the given name.
-func NewProvider(name string, create func(ctx DocumentContext) (Converter, error)) Provider {
+func NewProvider(name string, aliases []string, create func(ctx DocumentContext) (Converter, error)) Provider {
 	return newConverter{
-		name:   name,
-		create: create,
+		name:    name,
+		aliases: aliases,
+		create:  create,
 	}
 }
 
 type newConverter struct {
-	name   string
-	create func(ctx DocumentContext) (Converter, error)
+	name    string
+	aliases []string
+	create  func(ctx DocumentContext) (Converter, error)
 }
 
 func (n newConverter) New(ctx DocumentContext) (Converter, error) {
@@ -69,6 +72,10 @@ func (n newConverter) New(ctx DocumentContext) (Converter, error) {
 
 func (n newConverter) Name() string {
 	return n.name
+}
+
+func (n newConverter) Aliases() []string {
+	return n.aliases
 }
 
 var NopConverter = new(nopConverter)

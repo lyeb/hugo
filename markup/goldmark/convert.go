@@ -44,10 +44,10 @@ var Provider converter.ProviderProvider = provide{}
 
 type provide struct{}
 
-func (p provide) New(cfg converter.ProviderConfig) (converter.Provider, error) {
+func (p provide) New(cfg converter.ProviderConfig) ([]converter.Provider, error) {
 	md := newMarkdown(cfg)
 
-	return converter.NewProvider("goldmark", func(ctx converter.DocumentContext) (converter.Converter, error) {
+	return []converter.Provider{converter.NewProvider("goldmark", []string{}, func(ctx converter.DocumentContext) (converter.Converter, error) {
 		return &goldmarkConverter{
 			ctx: ctx,
 			cfg: cfg,
@@ -56,7 +56,7 @@ func (p provide) New(cfg converter.ProviderConfig) (converter.Provider, error) {
 				return sanitizeAnchorNameString(s, cfg.MarkupConfig.Goldmark.Parser.AutoHeadingIDType)
 			},
 		}, nil
-	}), nil
+	})}, nil
 }
 
 var _ converter.AnchorNameSanitizer = (*goldmarkConverter)(nil)
